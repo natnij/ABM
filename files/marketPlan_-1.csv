@@ -1,0 +1,8 @@
+,createDate,originRegion,destRegion,forecastProduct,RPD,CRD,quantity,customer
+0,0,CN,EU,AA,30,90,3000,DT
+1,0,CN,EU,AA,30,90,6000,Vodafone
+2,0,CN,EU,BB,30,90,2000,BT
+3,0,CN,ME,AA,30,90,6000,customer1
+4,0,CN,ME,BB,30,90,6000,customer2
+5,0,CN,LA,AA,30,90,5000,customer3
+6,0,CN,EU,AA,60,120,6000,DT

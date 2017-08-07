@@ -1,0 +1,4 @@
+,createDate,plannedProduction,MATERIAL_CODE,quantity,priority,RPD,customerOrder,actualProduction
+0,0,1,B,200,999,3,-1,-1
+1,0,1,C,200,999,2,-1,-1
+2,0,1,A,300,999,3,-1,-1
