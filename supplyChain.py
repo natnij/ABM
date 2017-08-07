@@ -13,7 +13,6 @@ import numpy as np
 import pandas as pd
 import os
 os.chdir('D:\\projects\\mesa\\output')
-from matplotlib import pyplot as plt
 
 class Transportation(Agent):
     def __init__(self, unique_id, model, specialFreight = False, speed = 1, 
@@ -297,11 +296,11 @@ class Supplier(Agent):
         # every multiply of 10 units gets a discount
 
 class MarketPlanner(Agent):
-    def __init__(self, unique_id, model, whs):
+    def __init__(self, unique_id, model, whs = None):
         super().__init__(unique_id, model)
         self.pos = (0, 0)
-        self.responsibleProductGroup = []
-        self.responsibleRegion = []
+        self.responsibleProductGroup = list()
+        self.responsibleRegion = list()
         self.reliability = 0.9
         self.marketplanDir = None # folder where all historical plans are
         self.currentMarketPlan = None
@@ -316,12 +315,13 @@ class MarketPlanner(Agent):
         update market plan.
         forecast algorithm can be plugged in here as one option.
         '''
-        self.currentMarketPlan = pd.read_csv(self.marketplanDir + self.unique_id + '_' + 
-                                             str(self.model.schedule.time - 1) + 'csv')
+        self.currentMarketPlan = pd.read_csv(self.marketplanDir + 'marketPlan_' + 
+                                             str(self.model.schedule.time - 1) + '.csv')
+        self.currentMarketPlan['createDate'] = self.model.schedule.time
         # here run whatever algorithm
         
-        self.currentMarketPlan.to_csv(self.marketplanDir + self.unique_id + '_' + 
-                                             str(self.model.schedule.time) + 'csv')
+        self.currentMarketPlan.to_csv(self.marketplanDir + 'marketPlan_' + 
+                                             str(self.model.schedule.time) + '.csv', index = False)
         
     def kpi(self):
         '''
@@ -332,25 +332,24 @@ class MarketPlanner(Agent):
         '''
         split order and give order to corresponding production scheduler
         '''
-        for region in self.responsibleRegion:
-            eval(region) = []
-        for row in range(self.currentMarketPlan.shape[0]):
-            record = pd.DataFrame([self.currentMarketPlan.iloc[row,:]])
-            if record['RPD'] < self.model.schedule.time:
-                continue
-            if np.array(record['originRegion'])[0] in self.responsibleRegion:
-                if np.array(record['forecastProduct'])[0] in self.responsibleProductGroup:
-                    eval(np.array(record['originRegion'])[0]) = eval(np.array(record['originRegion'])[0]).append([row])
+        currentPlan = self.currentMarketPlan[(self.currentMarketPlan['destRegion'].isin(self.responsibleRegion)) & 
+                                             (self.currentMarketPlan['forecastProduct'].isin(self.responsibleProductGroup)) & 
+                                             (self.currentMarketPlan['RPD'] >= self.model.schedule.time)]
         
+        groups = currentPlan.groupby('originRegion')
+       
         plants = self.model.setup.plant.copy()
-        for region in self.responsibleRegion:
+        for region in set(currentPlan['originRegion']):
             x = int(plants.loc[(plants['plantRegion'] == region), 'x'])
             y = int(plants.loc[(plants['plantRegion'] == region), 'y'])
-            plan = self.currentMarketPlan[self.currentMarketPlan.index.isin(eval(region))]
+            plan = groups.get_group(region)
             content = self.model.grid[x][y]
             productionscheduler = [x for x in content if isinstance(x, ProductionScheduler)]
             productionscheduler = productionscheduler[0]
-            productionscheduler.marketPlan = pd.concat([productionscheduler.marketPlan,plan], axis = 0)
+            if productionscheduler.marketPlan.shape[0] > 0:
+                productionscheduler.marketPlan = pd.concat([productionscheduler.marketPlan,plan], axis = 0)
+            else:
+                productionscheduler.marketPlan = plan
 
 class Order(Agent):
     def __init__(self, unique_id, model, orderLines):
@@ -402,24 +401,33 @@ class ProductionScheduler(Agent):
         self.pos = (0, 0)
         self.productionPlan = []
         self.plant = plantAgent
-        self.marketPlan = []
+        self.marketPlan = pd.DataFrame([])
         self.productionPlanDir = None
         self.reliability = 0.9
         self.customerOrders = []
     
     def readInOrders(self):
-        
+        self.customerOrders = self.model.setup.orderLines
+    
+    def splitMarketPlan(self):
+        # TODO: add market plan split rules
+        return
     
     def updateProductionPlan(self):
-        self.productionPlan = self.model.setup.productionPlan.copy()
+        self.productionPlan = pd.read_csv(self.productionPlanDir + self.unique_id + '_' + 
+                                             str(self.model.schedule.time - 1) + '.csv')
+        self.productionPlan['createDate'] = self.model.schedule.time
+        # run whatever algorithms to combine customer order, previous production plan and 
+        # market plan
+        
         self.productionPlan.to_csv(self.productionPlanDir + self.unique_id + '_' + 
-                                             str(self.model.schedule.time) + 'csv')
+                                             str(self.model.schedule.time) + '.csv', index = False)
         self.plant.productionPlan = self.productionPlan.copy()
     
     def step(self):
         self.readInOrders()
         self.updateProductionPlan()
-        self.marketPlan = [] # reset marketPlan to prepare for receiving new ones in next time unit
+        self.marketPlan = pd.DataFrame([]) # reset marketPlan to prepare for receiving new ones in next time unit
         
 #%%        
 class Plant(Agent):
@@ -559,10 +567,10 @@ class Setup(object):
                          'RPD','customerOrder','actualProduction'])
         self.productHierarchy = \
             pd.DataFrame([['AA','A'],
-                          ['AA','A1']
+                          ['AA','A1'],
                           ['AA','A2'],
                           ['BB','B'],
-                          ['BB','B1']
+                          ['BB','B1'],
                           ['BB','B2'],
                           ['CC','C'],
                           ['DD','D']
@@ -656,8 +664,8 @@ class SupplyChainModel(Model):
             self.num_whs = self.num_whs + 1
             
             market_planner = MarketPlanner('marketPlanner' + str(self.num_marketPlanner), self, agent)
-            market_planner.responsibleProductGroup = 
-            market_planner.responsibleRegion = key
+            market_planner.responsibleProductGroup = list(set(self.setup.productHierarchy['productGroup']))
+            market_planner.responsibleRegion.append(key)
             market_planner.marketplanDir = self.rules.marketplanDir # folder where all historical plans are
             self.schedule.add(market_planner)
             self.grid.place_agent(market_planner, (int(record['x']), int(record['y'])))
