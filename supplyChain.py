@@ -5,7 +5,7 @@ Created on Sat Jul 29 13:38:59 2017
 @author: Nat
 """
 from mesa import Agent, Model
-from mesa.time import RandomActivation
+from mesa.time import SimultaneousActivation
 import random
 from mesa.space import MultiGrid
 from mesa.datacollection import DataCollector
@@ -50,6 +50,8 @@ class Transportation(Agent):
             self.unload()
         if self.intransit is False:
             self.setsail()
+        
+    def advance(self):
         self.move()
     
     def load(self):     
@@ -194,12 +196,14 @@ class Product(Agent):
         if not self.active:
             return
         self.shelfLifeLeft = self.shelfLifeLeft - self.decayRate
+    
+    def advance(self):
         if self.shelfLifeLeft == 0: 
             self.scrapped = True
             self.active = False
             self.availableInStorage = False
             self.calScrapCost()
-        self.calCapitalCost()
+        self.calCapitalCost()        
         
     def move(self, new_position):
         self.model.grid.move_agent(self, new_position)
@@ -279,6 +283,8 @@ class Warehouse(Agent):
             self.unitPrice = self.defaultPrice
         else: 
             self.unitPrice = self.overCapacityPrice
+        
+    def advance(self):
         self.calStorageCost()
     
     def calStorageCost(self):
@@ -294,6 +300,14 @@ class Supplier(Agent):
         self.pos = (0, 0)
         self.listOfProducts = listOfProducts.copy()
         # every multiply of 10 units gets a discount
+        
+    def step(self):
+        #TODO: define action
+        return
+    
+    def advance(self):
+        #TODO: define action
+        return
 
 class MarketPlanner(Agent):
     def __init__(self, unique_id, model, whs = None):
@@ -305,37 +319,73 @@ class MarketPlanner(Agent):
         self.marketplanDir = None # folder where all historical plans are
         self.currentMarketPlan = None
         self.whs = whs
+        self.kpi = None
+        self.planningInterval = 15
+        self.planningHorizon = 25 # minumum planning horizon, within which the market plan is not considered
     
     def step(self):
-        self.updatePlan()
-        self.passOrder()
+        # TODO: schedule market planning to once per month
+        if np.mod(self.model.schedule.time, self.planningInterval) == 0:
+            self.updatePlan()
+            self.passOrder()
+    
+    def advance(self):
+        self.kpi = self.calKpi()
     
     def updatePlan(self):
         '''
         update market plan.
         forecast algorithm can be plugged in here as one option.
         '''
-        self.currentMarketPlan = pd.read_csv(self.marketplanDir + 'marketPlan_' + 
-                                             str(self.model.schedule.time - 1) + '.csv')
-        self.currentMarketPlan['createDate'] = self.model.schedule.time
+        # read in previous forecast
+        try:
+            previousPlan = pd.read_csv(self.marketplanDir + 'marketPlan_' + 
+                                             str(self.model.schedule.time - self.planningInterval) + '.csv')
+        except FileNotFoundError:
+            previousPlan = self.currentMarketPlan
+        coln = ['originRegion','destRegion','forecastProduct','CRD','customer']
+        previousPlan = previousPlan.loc[:,coln + ['quantity']]
+        previousPlan.columns = coln + ['oldQuantity']
+      
+        # create current forecast.
         # here run whatever algorithm
-        
-        self.currentMarketPlan.to_csv(self.marketplanDir + 'marketPlan_' + 
-                                             str(self.model.schedule.time) + '.csv', index = False)
-        
-    def kpi(self):
+        # TODO: add the whatever algorithm
+        # for simulation purpose: no update of market plan
+        try:
+            self.currentMarketPlan = pd.read_csv(self.marketplanDir + 'marketPlan_' + 
+                                                 str(self.model.schedule.time) + '.csv')
+            self.currentMarketPlan['createDate'] = self.model.schedule.time
+            # write to disk the complete current market plan
+            self.currentMarketPlan.to_csv(self.marketplanDir + 'marketPlan_' + 
+                                                 str(self.model.schedule.time) + '.csv', index = False)
+            # pass on the delta market plan 
+            delta = self.currentMarketPlan.merge(previousPlan, how = 'left', on = coln)
+            delta.fillna(0, inplace = True)
+            delta['quantity'] = delta['quantity'] - delta['oldQuantity']
+            delta.drop('oldQuantity', axis = 1, inplace = True)
+            self.currentMarketPlan = delta.copy()
+        except FileNotFoundError:
+            self.currentMarketPlan['quantity'] = 0
+       
+    def calKpi(self):
         '''
         get business KPI value 
         '''
+        #TODO: add kpi calculation methods
+        return 'NA'
         
     def passOrder(self):        
         '''
         split order and give order to corresponding production scheduler
+        planningHorizon: 
+            earliest RPD date from current date to consider long term market planning. 
+            any time unit before the planning horizon does not take market planning as reference, 
+            but actual orders.
         '''
         currentPlan = self.currentMarketPlan[(self.currentMarketPlan['destRegion'].isin(self.responsibleRegion)) & 
                                              (self.currentMarketPlan['forecastProduct'].isin(self.responsibleProductGroup)) & 
-                                             (self.currentMarketPlan['RPD'] >= self.model.schedule.time)]
-        
+                                             (self.currentMarketPlan['RPD'] >= self.model.schedule.time + self.planningHorizon) &
+                                             (self.currentMarketPlan['quantity'] != 0)]        
         groups = currentPlan.groupby('originRegion')
        
         plants = self.model.setup.plant.copy()
@@ -394,40 +444,227 @@ class Order(Agent):
         availability = [x.availableInStorage for x in self.listOfProducts]
         if (self.productAllocatedToOrder) and (np.all(availability)):
             self.fulfillOrder()
+            
+    def advance(self):
+        return
+    
 #%%
 class ProductionScheduler(Agent):
     def __init__(self, unique_id, model, plantAgent):
         super().__init__(unique_id, model)
         self.pos = (0, 0)
-        self.productionPlan = []
+        self.productionPlan = pd.DataFrame([]) # final production plan as passed on to plant production
         self.plant = plantAgent
-        self.marketPlan = pd.DataFrame([])
+        self.marketPlan = pd.DataFrame([]) # original as per market planner
         self.productionPlanDir = None
         self.reliability = 0.9
-        self.customerOrders = []
+        self.capacityRedLight = list()
+        self.fulfillmentRedLight = list()
+        self.minProdBatch = 100
+        self.availCap = 0.8 # capacity upper limit for planning
+        self.scheduleNonAdherence = 0 # number of planned production orders which are not executed as planned
     
     def readInOrders(self):
-        self.customerOrders = self.model.setup.orderLines
+        orders = [x for x in self.model.grid[self.pos[0]][self.pos[1]] if isinstance(x, Order)]
+        openOrders = [x for x in orders if sum(x.orderLines['quantity']) > 0]
+        currentOpenOrders = [x for x in openOrders if x.creationDate == self.model.schedule.time]
+        
+        priority = sortAgent(currentOpenOrders, 'RPD', reverse = True) # least important first to be scheduled in backwards scheduling
+        plan = self.productionPlan.copy()
+        for i in priority: 
+            line = pd.DataFrame([], columns = self.productionPlan.columns.tolist())
+            for row in range(currentOpenOrders[i].orderLines.shape[0]):
+                record = currentOpenOrders[i].orderLines.iloc[row, :]
+                line['MATERIAL_CODE'] = [record['MATERIAL_CODE']]
+                line['createDate'] = [self.model.schedule.time]
+                line['RPD'] = [currentOpenOrders[i].RPD]
+                line['priority'] = [999]               
+                line['customerOrder'] = [currentOpenOrders[i].unique_id]
+                line['actualProduction'] = [-1]
+                line['quantity'] = [int(record['quantity'] / self.minProdBatch) * self.minProdBatch]
+                line['plannedProduction'] = [self.model.schedule.time]
+                
+                # backwards planning. check if the day is already overcapacity. if so, go backwards one more day for more capacity. 
+                if currentOpenOrders[i].RPD <= self.model.schedule.time:
+                    # TODO: warning system and corresponding mitigation to be defined.
+                    self.fulfillmentRedLight.append(currentOpenOrders[i].unique_id)
+                else:
+                    for i in np.arange(1, currentOpenOrders[i].RPD - self.model.schedule.time):
+                        # backwards planning to search for capacity until current time unit.
+                        if (sum(plan.loc[plan['plannedProduction'] == currentOpenOrders[i].RPD - i,
+                                 'quantity']) + np.array(line['quantity'])[0]) > self.plant.dailyCapacity:
+                            continue
+                        else: 
+                            line['plannedProduction'] = [currentOpenOrders[i].RPD - i]
+                            break
+
+                plan = pd.concat([plan, line])
+                if sum(plan.loc[plan['plannedProduction'] == self.model.schedule.time,
+                                'quantity']) > self.plant.dailyCapacity:
+                    # TODO: warning system and corresponding mitigation to be defined.        
+                    self.capacityRedLight.append(self.model.schedule.time)
+        self.productionPlan = plan.copy()
+        
+    def getFinishedGoodsRatio(self, cutoffDays = 120):
+        group = self.model.setup.orderLines[self.model.schedule.time - 
+                            self.model.setup.orderLines['orderCreateDate'] <= cutoffDays].groupby(
+                            'MATERIAL_CODE', as_index = False).sum()
+        matchingTbl = self.model.setup.productHierarchy
+        group = group.merge(matchingTbl, on = 'MATERIAL_CODE', how = 'left')
+        bigGroup = group.groupby('forecastProduct', as_index = False).sum()
+        bigGroup = bigGroup.loc[:, ['forecastProduct', 'quantity']]
+        bigGroup.columns = ['forecastProduct', 'totalQuantity']
+        group = group.merge(bigGroup, on = 'forecastProduct', how = 'left')
+        group['ratio'] = group.apply(lambda row: row['quantity'] / row['totalQuantity'], axis = 1)
+        return group.loc[:, ['MATERIAL_CODE','ratio']]
     
-    def splitMarketPlan(self):
-        # TODO: add market plan split rules
-        return
+    def splitMarketPlan(self, cutoffDays = 120, planUnit = 'monthly'):
+        '''
+        split market plans to production quantity per time unit, same format as production plan
+        available capacity: 
+            daily capacity upper limit to plan for long-term market forecast. 
+            0.8 means 80% of self.plant.dailyCapacity will be planned for market forecast.
+        cutoffDays:
+            number of days in history to take as reference for detailed MATERIAL_CODE level
+            quantity split.
+        output: new production plan with market forecast included
+        '''
+        if self.marketPlan.shape[0] == 0:
+            return
+        # TODO: add other market plan split rules
+        planningInterval = 30 # default is monthly 
+        if planUnit == 'weekly':
+            planningInterval = 7
+        if planUnit == 'seasonal':
+            planningInterval = 90
+        if planUnit == 'annual':
+            planningInterval = 365
+            
+        ratio = self.getFinishedGoodsRatio(cutoffDays)
+        group = self.marketPlan.groupby(['RPD','forecastProduct'], as_index = False).sum()
+        colnames = group.columns.tolist()
+        colnames[colnames.index('quantity')] = 'totalQuantity'
+        group.columns = colnames
+        
+        matchingTbl = self.model.setup.productHierarchy.copy()
+        group = group.merge(matchingTbl, how = 'left', on = 'forecastProduct')
+        group = group.merge(ratio, how = 'left', on = 'MATERIAL_CODE')
+        group['quantity'] = group['totalQuantity'] * group['ratio']
+        group['quantity'] = group['quantity'].apply(int)
+        
+        group = group.loc[:, ['RPD','MATERIAL_CODE', 'quantity']]
+        dailyCap = self.plant.dailyCapacity * self.availCap
+
+        plan = self.productionPlan.copy()
+        for dueDate in set(group['RPD']):
+            rpdGroup = group[group['RPD'] == dueDate]
+            totalPlanned = np.sum(rpdGroup['quantity'])
+            nrPeriods = int(np.ceil(totalPlanned / dailyCap))
+            if nrPeriods > planningInterval: 
+                #TODO: warning system and corresponding mitigation to be defined.
+                self.capacityRedLight.append(dueDate)
+            
+            for prod in rpdGroup['MATERIAL_CODE'].tolist():
+                quantityToBePlanned = np.array(rpdGroup.loc[rpdGroup['MATERIAL_CODE'] == prod, 'quantity'])[0]
+                quantityLeft = quantityToBePlanned
+                
+                if quantityLeft < 0:                    
+                    # reduced forecast: delta passed from market planner is negative
+                    _quantityLeft = int(np.abs(quantityLeft) / self.minProdBatch) * self.minProdBatch
+                    for j in range(dueDate - self.model.schedule.time - 1):
+                        if _quantityLeft <= 0:
+                            break
+                        record = plan.loc[(plan['MATERIAL_CODE'] == prod) &
+                                          (plan['plannedProduction'] == dueDate - j) & 
+                                          (plan['customerOrder'] == -1) & 
+                                          (plan['actualProduction'] == -1),:]
+                        if record.shape[0] == 0:
+                            continue
+                        
+                        for k in range(record.shape[0]):
+                            qty = record.iloc[k, record.columns.tolist().index('quantity')]
+                            record.iloc[k, record.columns.tolist().index('quantity')] = np.max([0, qty - _quantityLeft])
+                            _quantityLeft = _quantityLeft - qty
+                            if _quantityLeft <= 0:
+                                break
+                        plan.loc[plan.index.isin(record.index),'quantity'] = record['quantity']
+                        plan.loc[plan.index.isin(record.index),'actualProduction'] = -99
+                            
+                for i in range(dueDate - self.model.schedule.time - 1):
+                    # check if all required quantity for the specific material and RPD are planned 
+                    # because of the round-up to minimum production batch, quantity may be all planned in less than nrPeriods.
+                    if quantityLeft <= 0:
+                        break
+                    line = pd.DataFrame([], columns = self.productionPlan.columns.tolist())
+                    line['MATERIAL_CODE'] = [prod]
+                    line['createDate'] = [self.model.schedule.time]
+                    line['plannedProduction'] = [dueDate - i - 1]
+                    line['RPD'] = [dueDate - i]
+                    line['priority'] = [999]               
+                    line['customerOrder'] = [-1]
+                    line['actualProduction'] = [-1]
+                    qty = int(np.ceil(quantityToBePlanned / planningInterval / self.minProdBatch)) * self.minProdBatch
+                    if quantityLeft <  qty - self.minProdBatch:
+                        line['quantity'] = [int(np.ceil(quantityLeft / self.minProdBatch)) * self.minProdBatch]
+                    else:
+                        line['quantity'] = [qty]
+                    
+                    # backwards planning. check if the day is already overcapacity. if so, go backwards one more day for more capacity. 
+                    if (sum(plan.loc[plan['plannedProduction'] == dueDate - i - 1,'quantity']) + np.array(line['quantity'])[0]) >= self.plant.dailyCapacity:
+                        # if backwards planning has planned more than 30 days back:
+                        if i >= 30:
+                            self.capacityRedLight.append(dueDate - i)
+                        continue
+                    
+                    quantityLeft = quantityLeft - np.array(line['quantity'])[0]
+                    plan = pd.concat([plan, line])
+                    
+                # if until current time unit there is still no capacity:
+                if quantityLeft > 0:
+                    self.fulfillmentRedLight.append((prod, dueDate, quantityLeft))
+                    
+        self.productionPlan = plan.copy()
     
     def updateProductionPlan(self):
-        self.productionPlan = pd.read_csv(self.productionPlanDir + self.unique_id + '_' + 
-                                             str(self.model.schedule.time - 1) + '.csv')
-        self.productionPlan['createDate'] = self.model.schedule.time
-        # run whatever algorithms to combine customer order, previous production plan and 
-        # market plan
-        
+        # run whatever algorithms to level-schedule production plan
+        # TODO: add other strategies for production scheduling        
+        self.productionPlan.index = np.arange(0, self.productionPlan.shape[0])
         self.productionPlan.to_csv(self.productionPlanDir + self.unique_id + '_' + 
                                              str(self.model.schedule.time) + '.csv', index = False)
         self.plant.productionPlan = self.productionPlan.copy()
     
+    def updatePurchaseOrder(self):
+        # TODO: add BOM explosion and raw material planning to pass to Plant.buy() method
+        return 
+    
+    def monitorExecution(self):
+        '''
+        monitor plant production situation in the current time unit (based on previous time unit's production plan)
+        especially for the 'actualProduction' flag
+        '''
+        if self.model.schedule.time > 0:
+            self.productionPlan = self.plant.productionPlan.copy()
+            delayed = self.productionPlan[(self.productionPlan['plannedProduction'] < self.model.schedule.time) &
+                                            (self.productionPlan['actualProduction'] == -1)].shape[0]
+            # re-schedule delayed orders from the previous time unit
+            self.productionPlan.loc[(self.productionPlan['plannedProduction'] < self.model.schedule.time) &
+                                            (self.productionPlan['actualProduction'] == -1), 
+                                    'plannedProduction'] = self.model.schedule.time
+            self.scheduleNonAdherence = self.scheduleNonAdherence + delayed
+        
     def step(self):
+        return
+        
+    def advance(self):
+        # all market planners pass orders to production scheduler in MarketPlanner.step() methods in the current time unit.
+        # based on which the production schedule will be updated in ProductionScheduler.advance() method in the current time unit
+        # and carried out in Plant.step() method in the next time unit.
+        self.monitorExecution()
+        self.splitMarketPlan() 
         self.readInOrders()
         self.updateProductionPlan()
-        self.marketPlan = pd.DataFrame([]) # reset marketPlan to prepare for receiving new ones in next time unit
+        self.updatePurchaseOrder()
+        self.marketPlan = pd.DataFrame([], columns = self.marketPlan.columns) # reset marketPlan to prepare for receiving new ones in next time unit
         
 #%%        
 class Plant(Agent):
@@ -443,30 +680,41 @@ class Plant(Agent):
         self.productionPlan = []
     
     def step(self):
-        self.produce()
-        self.calUtilization()
+        self.produce() # based on input from ProductionScheduler.advance() method from previous time unit.
+        self.buy()
+    
+    def advance(self):
+        self.calUtilization()        
     
     def produce(self):
+        #TODO: add purchased-material availability check
+        
         if len(self.productionPlan) == 0:
             return
         productionPlan = self.productionPlan[(self.productionPlan['plannedProduction'] <= self.model.schedule.time) &
                                         (self.productionPlan['actualProduction'] == -1)]
         productionPlan.sort_values(by = 'priority', ascending = True, inplace = True)
-        planIndex = productionPlan.index.tolist()
         for i in range(productionPlan.shape[0]):
             if random.randrange(0, 100) > self.reliability * 100:
                 continue
+            idx = productionPlan.iloc[i,:].name
             line = pd.DataFrame([productionPlan.iloc[i,:]])
             productName = np.array(line['MATERIAL_CODE'])[0]
             record = self.setup.product[self.setup.product['MATERIAL_CODE'] == productName]
+            if record.shape[0] > 0:
+                wgt = int(np.array(record.weight)[0])
+                vol = int(np.array(record.volume)[0])
+            else:
+                wgt = self.model.rules.default_weight # default
+                vol = self.model.rules.default_volume # default
             quantity = int(line.loc[:,'quantity'])
             if self.utilization + quantity >= self.dailyCapacity:
                 return
 
             orderID = np.array(line['customerOrder'])[0]
-            product = Product(productName + str(self.model.num_product), self.model, 
-                              quantity = quantity,
-                              supplier = None, weight = int(record.weight), volume = int(record.volume))
+            product = Product(productName + str(self.model.num_product), 
+                              self.model, quantity = quantity,
+                              supplier = None, weight = wgt, volume = vol)
             product.name = productName
             if not orderID == 'NA':
                 content = self.model.grid.get_cell_list_contents(self.pos)
@@ -483,7 +731,7 @@ class Plant(Agent):
             self.whs.listOfProducts.append(product)
             self.model.num_product = self.model.num_product + 1
             self.utilization = self.utilization + product.quantity
-            self.productionPlan.loc[productionPlan.index == planIndex[i], 'actualProduction'] = self.model.schedule.time
+            self.productionPlan.loc[self.productionPlan.index == idx, 'actualProduction'] = self.model.schedule.time
     
     def calUtilization(self):
         if self.model.schedule.time > 0:
@@ -491,20 +739,26 @@ class Plant(Agent):
         # reset
         self.utilization = 0
         
-    def buy(self, productName, productQuantity, supplierAgent):
-        record = self.setup.product[self.setup.product['MATERIAL_CODE'] == productName]
-        product = Product(productName + str(self.model.num_product), self, quantity = productQuantity, 
-                        supplier = supplierAgent, weight = record.weight, volume = record.volume)
-        product.name = productName
-        self.model.schedule.add(product)
-        self.model.grid.place_agent(product, supplierAgent.pos)
-        self.model.num_product = self.model.num_product + 1    
+    def buy(self, productName = None, productQuantity = None, supplierAgent = None):
+        #TODO: add BOM explosion and purchase orders to suppliers.
+        
+#        record = self.setup.product[self.setup.product['MATERIAL_CODE'] == productName]
+#        product = Product(productName + str(self.model.num_product), self, quantity = productQuantity, 
+#                        supplier = supplierAgent, weight = record.weight, volume = record.volume)
+#        product.name = productName
+#        self.model.schedule.add(product)
+#        self.model.grid.place_agent(product, supplierAgent.pos)
+#        self.model.num_product = self.model.num_product + 1    
+
+        return
 #%%
 class Rules(object):
     def __init__(self):
         self.companyInterestRate = 0.000246575342465753 #absolute value as in 9% / 365 days, assuming every time unit is one day.
         self.marketplanDir = 'D:\\projects\\mesa\\files\\'
         self.productionPlanDir = 'D:\\projects\\mesa\\files\\'
+        self.default_weight = 1
+        self.default_volume = 1
 
 class Setup(object):
     def __init__(self):
@@ -535,13 +789,13 @@ class Setup(object):
             columns = ['supplierName', 'MATERIAL_CODE','volumeDiscountCode','unitPrice'])
         self.orderLines = pd.DataFrame([[1, 60,'CN','EU','B',200],
                                         [1, 50,'CN','ME','C',200],
-                                        [1, 60,'CN','EU','A',300],
-                                        [5, 65,'CN','EU','B',100],
+                                        [1, 60,'CN','EU','A1',300],
+                                        [5, 65,'CN','EU','B1',100],
                                         [10,70,'CN','EU','A',100],
                                         [15,80,'CN','EU','C',200],
-                                        [16,45,'CN','ME','B',500],
+                                        [16,45,'CN','ME','B2',500],
                                         [20,70,'CN','LA','C',600],
-                                        [21, 80,'CN','EU','B',200],
+                                        [21, 80,'CN','EU','B1',200],
                                         [21, 80,'CN','ME','C',200],
                                         [21, 80,'CN','EU','A',300],
                                         [25, 85,'CN','EU','B',100],
@@ -551,8 +805,8 @@ class Setup(object):
                                         [40,80,'CN','LA','C',600],
                                         [51, 60,'CN','EU','B',200],
                                         [51, 80,'CN','ME','C',200],
-                                        [61, 80,'CN','EU','A',300],
-                                        [65, 95,'CN','EU','B',100],
+                                        [61, 80,'CN','EU','A2',300],
+                                        [65, 95,'CN','EU','B2',100],
                                         [70,90,'CN','EU','A',100],
                                         [75,80,'CN','EU','C',200],
                                         [76,95,'CN','ME','B',500],
@@ -574,7 +828,7 @@ class Setup(object):
                           ['BB','B2'],
                           ['CC','C'],
                           ['DD','D']
-                    ], columns = ['productGroup','MATERIAL_CODE'])
+                    ], columns = ['forecastProduct','MATERIAL_CODE'])
         self.BOM = pd.DataFrame([['A',None],
                                  ['A1','a1'],
                                  ['A1','a2'],
@@ -589,8 +843,8 @@ class Setup(object):
                     ], columns = ['FG','rawMaterial'])
 
 def sortAgent(listOfAgents, sortKey, reverse = False):
-    key = {agent.__getattribute__(sortKey): i for i, agent in enumerate(listOfAgents)}
-    sequence = [key.get(x) for x in sorted(key.keys(), reverse = reverse)]
+    pair = {i: agent.__getattribute__(sortKey) for i, agent in enumerate(listOfAgents)}
+    sequence = sorted(pair, key = pair.__getitem__, reverse = reverse)
     return sequence.copy()
 
 def calCostPerProduct(model):
@@ -643,7 +897,7 @@ def whsUtil2(agent):
 class SupplyChainModel(Model):
     def __init__(self, width = 100, height = 100):
         self.setup = Setup()        
-        self.schedule = RandomActivation(self)
+        self.schedule = SimultaneousActivation(self) # requires each agent to implement both methods 'step' and 'advance'
         self.grid = MultiGrid(width, height, torus = False)
         self.running = True
         self.num_product = 0
@@ -664,7 +918,7 @@ class SupplyChainModel(Model):
             self.num_whs = self.num_whs + 1
             
             market_planner = MarketPlanner('marketPlanner' + str(self.num_marketPlanner), self, agent)
-            market_planner.responsibleProductGroup = list(set(self.setup.productHierarchy['productGroup']))
+            market_planner.responsibleProductGroup = list(set(self.setup.productHierarchy['forecastProduct']))
             market_planner.responsibleRegion.append(key)
             market_planner.marketplanDir = self.rules.marketplanDir # folder where all historical plans are
             self.schedule.add(market_planner)
@@ -692,6 +946,8 @@ class SupplyChainModel(Model):
             self.num_plant = self.num_plant + 1
             production_scheduler = ProductionScheduler('productionScheduler' + str(self.num_productionScheduler), self, agent)
             production_scheduler.productionPlanDir = self.rules.productionPlanDir
+            production_scheduler.productionPlan = pd.read_csv(production_scheduler.productionPlanDir + 
+                                                              production_scheduler.unique_id + '_' + '-1.csv')
             self.schedule.add(production_scheduler)
             self.grid.place_agent(production_scheduler, (int(record['x']), int(record['y'])))
             self.num_productionScheduler = self.num_productionScheduler + 1
@@ -833,6 +1089,7 @@ class SupplyChainModel(Model):
             RPD = CRD
         else:
             # calculate lead time
+            # TODO: add distribution to the mean lead time based on actual historical lead time
             transportLT = np.sqrt( np.power(int(origin['x']) - int(dest['x']),2) + np.power(int(origin['y']) - int(dest['y']),2))
             RPD = CRD - int(transportLT) - buffer
             if RPD < self.schedule.time:
@@ -843,15 +1100,17 @@ class SupplyChainModel(Model):
         self.grid.place_agent(order, (int(origin['x']), int(origin['y'])))          
         
     def step(self):
+        self.createOrder()
+        self.dispatchFinishedGoods()
+         # if self.schedule = SimultaneousActivation(self), 
+         # then agent.step() and agent.advance() are both executed in self.schedule.step()
+        self.schedule.step()
         self.datacollector1.collect(self)
         self.datacollector2.collect(self)
         self.datacollector3.collect(self)
         self.datacollector4.collect(self)
-        self.datacollector5.collect(self)
-        self.createOrder()
-        self.dispatchFinishedGoods()
-        self.schedule.step()
-            
+        self.datacollector5.collect(self)     
+
 #%%
 
 model = SupplyChainModel()
