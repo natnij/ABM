@@ -12,7 +12,7 @@ from mesa.datacollection import DataCollector
 import numpy as np
 import pandas as pd
 import os
-os.chdir('D:\\projects\\mesa\\output')
+os.chdir('D:\\projects\\mesa')
 
 class Transportation(Agent):
     def __init__(self, unique_id, model, specialFreight = False, speed = 1, 
@@ -873,7 +873,7 @@ def showPlantUtilization(model):
     else:
         return utilization / capacity
 
-def showWhsUtilization(model):
+def averageWhsUtilization(model):
     utilization = 0
     capacity = 0
     for agent in model.schedule.agents:
@@ -885,13 +885,21 @@ def showWhsUtilization(model):
     else:
         return utilization / capacity
     
-def plantUtil2(agent):
-    if isinstance(agent, Plant):
-        return agent.averageUtilization
-    
-def whsUtil2(agent):
-    if isinstance(agent, Warehouse):
-        return agent.utilization
+def EUWhsUtilization(model):
+    util = 0
+    for agent in model.schedule.agents:
+        if isinstance(agent, Warehouse) and agent.unique_id == 'EU':
+            util = agent.utilization / agent.capacity
+            break
+    return util
+
+def CNWhsUtilization(model):
+    util = 0
+    for agent in model.schedule.agents:
+        if isinstance(agent, Warehouse) and agent.unique_id == 'CN':
+            util = agent.utilization / agent.capacity
+            break
+    return util
     
 #%%
 class SupplyChainModel(Model):
@@ -952,17 +960,13 @@ class SupplyChainModel(Model):
             self.grid.place_agent(production_scheduler, (int(record['x']), int(record['y'])))
             self.num_productionScheduler = self.num_productionScheduler + 1
         
-        self.datacollector1 = DataCollector(
-                model_reporters = {'cost per product': calCostPerProduct})
-        self.datacollector2 = DataCollector(
-                model_reporters = {'plant utilization': showPlantUtilization})
-        self.datacollector3 = DataCollector(
-                model_reporters = {'whs utilization': showWhsUtilization})
-        self.datacollector4 = DataCollector(
-                agent_reporters = {'plant util2': lambda a: plantUtil2(a)})
-        self.datacollector5 = DataCollector(
-                agent_reporters = {'whs util2': lambda a: whsUtil2(a)})
-    
+        self.datacollector = DataCollector(
+                model_reporters = {'cost per product': calCostPerProduct,
+                                   'plant utilization': showPlantUtilization, 
+                                   'average whs utilization': averageWhsUtilization,
+                                   'EU warehouse': EUWhsUtilization,
+                                   'CN warehouse': CNWhsUtilization})
+   
     def bookTransport(self, origin, destination, 
                       specialFreight = False, speed = 1, 
                       priceIncreaseFactor = 10, reliability = 0.9, 
@@ -1105,28 +1109,19 @@ class SupplyChainModel(Model):
          # if self.schedule = SimultaneousActivation(self), 
          # then agent.step() and agent.advance() are both executed in self.schedule.step()
         self.schedule.step()
-        self.datacollector1.collect(self)
-        self.datacollector2.collect(self)
-        self.datacollector3.collect(self)
-        self.datacollector4.collect(self)
-        self.datacollector5.collect(self)     
+        self.datacollector.collect(self)  
 
 #%%
 
-model = SupplyChainModel()
+#model = SupplyChainModel()
+#
+#for i in range(200):
+#    model.step()
+#agent_counts = np.zeros((model.grid.width, model.grid.height))
+#for cell in model.grid.coord_iter():
+#    content, x, y = cell
+#    agent_counts[x][y] = len(content)
+#pd.DataFrame(agent_counts).to_clipboard()
+#
+#data1 = model.datacollector.get_model_vars_dataframe()
 
-for i in range(200):
-    model.step()
-agent_counts = np.zeros((model.grid.width, model.grid.height))
-for cell in model.grid.coord_iter():
-    content, x, y = cell
-    agent_counts[x][y] = len(content)
-pd.DataFrame(agent_counts).to_clipboard()
-
-data1 = model.datacollector1.get_model_vars_dataframe()
-data2 = model.datacollector2.get_model_vars_dataframe()
-data3 = model.datacollector3.get_model_vars_dataframe()
-data4 = model.datacollector4.get_agent_vars_dataframe()
-data5 = model.datacollector5.get_agent_vars_dataframe()
-data4 = data4[~data4['plant util2'].isnull()]
-data5 = data5[~data5['whs util2'].isnull()]

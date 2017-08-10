@@ -12,8 +12,8 @@ from mesa.visualization.modules import CanvasGrid
 from mesa.visualization.ModularVisualization import ModularServer
 from mesa.visualization.modules import ChartModule
 
-import sys
-sys.path.append('D:\\projects\\mesa\\')
+import os
+os.chdir('D:\\projects\\mesa')
 from supplyChain import SupplyChainModel, Plant, Warehouse, Supplier, Transportation, Product, Order
 
 def agent_portrayal(agent):
@@ -43,21 +43,26 @@ def agent_portrayal(agent):
     return portrayal
 
 grid = CanvasGrid(agent_portrayal, 100, 100, 800, 800)
-chart1 = ChartModule([{'Label': 'average cost',
+chart1 = ChartModule([{'Label': 'cost per product',
                       'Color': 'Black'}],
-                    data_collector_name = 'datacollector1',
+                    data_collector_name = 'datacollector',
                     canvas_height = 400,
                     canvas_width = 800)
-chart2 = ChartModule([{'Label': 'plant util',
+chart2 = ChartModule([{'Label': 'plant utilization',
                       'Color': 'Black'}],
-                    data_collector_name = 'datacollector2',
+                    data_collector_name = 'datacollector',
+                    canvas_height = 400,
+                    canvas_width = 800)
+chart3 = ChartModule([{'Label': 'CN warehouse',
+                      'Color': 'Black'}],
+                    data_collector_name = 'datacollector',
                     canvas_height = 400,
                     canvas_width = 800)
         
 server = ModularServer(SupplyChainModel,
-                       [grid, chart1, chart2],
+                       [grid, chart1, chart2, chart3],
                        "Supply Chain Model",
                        {'width':100, 'height':100})
-server.port = 8538
+server.port = 8521
 server.launch()
 
