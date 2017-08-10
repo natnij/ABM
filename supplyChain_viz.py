@@ -58,9 +58,41 @@ chart3 = ChartModule([{'Label': 'CN warehouse',
                     data_collector_name = 'datacollector',
                     canvas_height = 400,
                     canvas_width = 800)
+chart4 = ChartModule([{'Label': 'EU order fulfillment',
+                      'Color': 'Black'}],
+                    data_collector_name = 'datacollector',
+                    canvas_height = 400,
+                    canvas_width = 800)        
+chart5 = ChartModule([{'Label': 'LA warehouse',
+                      'Color': 'Black'}],
+                    data_collector_name = 'datacollector',
+                    canvas_height = 400,
+                    canvas_width = 800)
+chart6 = ChartModule([{'Label': 'EU warehouse',
+                      'Color': 'Black'}],
+                    data_collector_name = 'datacollector',
+                    canvas_height = 400,
+                    canvas_width = 800)
+chart7 = ChartModule([{'Label': 'ME warehouse',
+                      'Color': 'Black'}],
+                    data_collector_name = 'datacollector',
+                    canvas_height = 400,
+                    canvas_width = 800)
+chart8 = ChartModule([{'Label': 'LA order fulfillment',
+                      'Color': 'Black'}],
+                    data_collector_name = 'datacollector',
+                    canvas_height = 400,
+                    canvas_width = 800) 
+chart9 = ChartModule([{'Label': 'ME order fulfillment',
+                      'Color': 'Black'}],
+                    data_collector_name = 'datacollector',
+                    canvas_height = 400,
+                    canvas_width = 800) 
         
 server = ModularServer(SupplyChainModel,
-                       [grid, chart1, chart2, chart3],
+                       [grid, chart1, chart2, chart3,
+                        chart5, chart6, chart7,
+                        chart4, chart8, chart9],
                        "Supply Chain Model",
                        {'width':100, 'height':100})
 server.port = 8521

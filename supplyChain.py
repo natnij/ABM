@@ -901,6 +901,58 @@ def CNWhsUtilization(model):
             break
     return util
     
+def LAWhsUtilization(model):
+    util = 0
+    for agent in model.schedule.agents:
+        if isinstance(agent, Warehouse) and agent.unique_id == 'LA':
+            util = agent.utilization / agent.capacity
+            break
+    return util
+
+def MEWhsUtilization(model):
+    util = 0
+    for agent in model.schedule.agents:
+        if isinstance(agent, Warehouse) and agent.unique_id == 'ME':
+            util = agent.utilization / agent.capacity
+            break
+    return util
+
+def EUorderFulfillment(model):
+    totalFulfilled = 0
+    totalOnTime = 0
+    for agent in model.schedule.agents:
+        if isinstance(agent, Order) and agent.destRegion == 'EU':
+            totalFulfilled = totalFulfilled + agent.fulfilled
+            totalOnTime = totalOnTime + agent.onTimeInFull
+    if totalFulfilled == 0: 
+        return 0
+    else:
+        return totalOnTime / totalFulfilled        
+
+def MEorderFulfillment(model):
+    totalFulfilled = 0
+    totalOnTime = 0
+    for agent in model.schedule.agents:
+        if isinstance(agent, Order) and agent.destRegion == 'ME':
+            totalFulfilled = totalFulfilled + agent.fulfilled
+            totalOnTime = totalOnTime + agent.onTimeInFull
+    if totalFulfilled == 0: 
+        return 0
+    else:
+        return totalOnTime / totalFulfilled     
+
+def LAorderFulfillment(model):
+    totalFulfilled = 0
+    totalOnTime = 0
+    for agent in model.schedule.agents:
+        if isinstance(agent, Order) and agent.destRegion == 'LA':
+            totalFulfilled = totalFulfilled + agent.fulfilled
+            totalOnTime = totalOnTime + agent.onTimeInFull
+    if totalFulfilled == 0: 
+        return 0
+    else:
+        return totalOnTime / totalFulfilled     
+
 #%%
 class SupplyChainModel(Model):
     def __init__(self, width = 100, height = 100):
@@ -965,7 +1017,12 @@ class SupplyChainModel(Model):
                                    'plant utilization': showPlantUtilization, 
                                    'average whs utilization': averageWhsUtilization,
                                    'EU warehouse': EUWhsUtilization,
-                                   'CN warehouse': CNWhsUtilization})
+                                   'CN warehouse': CNWhsUtilization,
+                                   'LA warehouse': LAWhsUtilization,
+                                   'ME warehouse': MEWhsUtilization,
+                                   'EU order fulfillment': EUorderFulfillment,
+                                   'LA order fulfillment': LAorderFulfillment,
+                                   'ME order fulfillment': MEorderFulfillment})
    
     def bookTransport(self, origin, destination, 
                       specialFreight = False, speed = 1, 
