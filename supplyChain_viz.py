@@ -11,34 +11,45 @@ run 'python supplyChain_viz.py'
 from mesa.visualization.modules import CanvasGrid
 from mesa.visualization.ModularVisualization import ModularServer
 from mesa.visualization.modules import ChartModule
+import re
 
 import os
 os.chdir('D:\\projects\\mesa')
-from supplyChain import SupplyChainModel, Plant, Warehouse, Supplier, Transportation, Product, Order
+from supplyChain import SupplyChainModel, Plant, Warehouse, Supplier, Transportation, Product
 
 def agent_portrayal(agent):
     portrayal = {"Shape": "circle",
                  "Filled": "true",
-                 "Layer": 0}
+                 "Layer": 0, 
+                 'r': 4}
     
-    if isinstance(agent, Plant) or isinstance(agent, Warehouse) or \
-        isinstance(agent, Supplier):
+    if isinstance(agent, Plant):
+        portrayal['Color'] = 'brown'       
+    
+    if isinstance(agent, Supplier):
+        portrayal['Color'] = 'red'
+    
+    if isinstance(agent, Warehouse):
         portrayal['Color'] = 'blue'
-        portrayal['r'] = 2
     
     if isinstance(agent, Transportation):
         portrayal['Color'] = 'green'
-        portrayal['r'] = 2
+        portrayal['r'] = 3
     
-    if isinstance(agent, Product):
+    if isinstance(agent, Product) and re.match('^material', agent.unique_id):
         portrayal['Color'] = 'yellow'
         portrayal['Layer'] = 2
-        portrayal['r'] = 0.2
+        portrayal['r'] = 1
 
-    if isinstance(agent, Order):
+    if isinstance(agent, Product) and not re.match('^material', agent.unique_id):
         portrayal['Color'] = 'grey'
-        portrayal['Layer'] = 1
-        portrayal['r'] = 0.2
+        portrayal['Layer'] = 2
+        portrayal['r'] = 1
+
+#    if isinstance(agent, Order):
+#        portrayal['Color'] = 'grey'
+#        portrayal['Layer'] = 1
+#        portrayal['r'] = 0.2
     
     return portrayal
 
